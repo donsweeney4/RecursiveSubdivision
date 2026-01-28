@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "project": {
+    "name": "RecursiveSubdivision",
+    "description": "Geospatial temperature grid analysis using recursive subdivision"
+  },
+  "settings": {
+    "autoCommit": false,
+    "testCommand": "python -m pytest",
+    "lintCommand": "python -m flake8"
+  }
+}
