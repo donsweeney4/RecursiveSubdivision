@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <GroundOverlay>
+    <name>Contour Overlay</name>
+    <Icon>
+      <href>contour_overlay.png</href>
+    </Icon>
+    <LatLonBox>
+      <north>37.6840845</north>
+      <south>37.680166</south>
+      <east>-121.75723400000001</east>
+      <west>-121.76206428571429</west>
+    </LatLonBox>
+  </GroundOverlay>
+</kml>

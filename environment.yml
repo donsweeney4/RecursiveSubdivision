@@ -1,0 +1,4 @@
+name: recursive
+channels:
+  - defaults
+prefix: /opt/miniconda3/envs/recursive
