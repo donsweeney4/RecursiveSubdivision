@@ -34,7 +34,7 @@ pip install -r requirements.txt
 ### Basic Run
 
 ```bash
-python Recursive_Sub_Sample_Script_V9.py --csv InputData.csv
+python temperature_grid.py --csv InputData.csv
 ```
 
 ### CLI Options
@@ -58,13 +58,13 @@ python Recursive_Sub_Sample_Script_V9.py --csv InputData.csv
 
 ```bash
 # Specify input CSV and minimum samples threshold
-python Recursive_Sub_Sample_Script_V9.py --csv MyData.csv --min-samples 5
+python temperature_grid.py --csv MyData.csv --min-samples 5
 
 # Generate raster overlay map
-python Recursive_Sub_Sample_Script_V9.py --csv InputData.csv --with-raster
+python temperature_grid.py --csv InputData.csv --with-raster
 
 # Run with Kriging visualization, no static plots
-python Recursive_Sub_Sample_Script_V9.py --csv InputData.csv --kriging --no-static-plots
+python temperature_grid.py --csv InputData.csv --kriging --no-static-plots
 ```
 
 ## Input Data Format
