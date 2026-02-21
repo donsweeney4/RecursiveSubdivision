@@ -1,10 +1,10 @@
+
 """
 temperature_grid.py
 
 Build temperature-colored grid polygons from point samples using a recursive
 subdivision, compute subregion stats, generate Folium layers (GeoJSON and
-optional raster overlay), and produce static Matplotlib plots. Includes an
-optional Kriging visualization.
+optional raster overlay), and produce static Matplotlib plots.
 
 CLI usage (examples):
 ---------------------
@@ -16,9 +16,6 @@ python temperature_grid.py --csv InputData.csv --min-samples 5
 
 # Produce Folium map with raster overlay (from a transparent contour image):
 python temperature_grid.py --folium-html folium_map.html --with-raster
-
-# Change output CSV and turn on kriging plot:
-python temperature_grid.py --output-centroids centroids.csv --kriging
 """
 
 from __future__ import annotations
@@ -28,7 +25,6 @@ import json
 import math
 import os
 import time
-import zipfile
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
@@ -43,13 +39,13 @@ from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 from shapely.prepared import prep  # optional but recommended
 from scipy.interpolate import griddata
+from scipy.spatial import Delaunay
+from pyproj import Transformer
 
 import folium
 import branca.colormap as bcm
 from folium.raster_layers import ImageOverlay
 from folium.plugins import FastMarkerCluster
-
-from pykrige.ok import OrdinaryKriging
 
 
 # -------------------------------
@@ -68,6 +64,76 @@ def get_custom_cmap():
     return LinearSegmentedColormap.from_list("high_contrast_temp", hex_colors, N=256)
 
 HIGH_CONTRAST_CMAP = get_custom_cmap()
+
+
+# -------------------------------
+# Delaunay triangulation interpolation
+# -------------------------------
+def delaunay_interpolate(points, values, grid_points):
+    """
+    Perform Delaunay triangulation interpolation.
+    
+    Args:
+        points: (N, 2) array of sample point coordinates
+        values: (N,) array of values at sample points
+        grid_points: (M, 2) array of grid points to interpolate to
+    
+    Returns:
+        (M,) array of interpolated values
+    """
+    # Create Delaunay triangulation
+    tri = Delaunay(points)
+    
+    # Find which triangle each grid point belongs to
+    simplex_indices = tri.find_simplex(grid_points)
+    
+    # Initialize output array
+    interpolated = np.full(len(grid_points), np.nan)
+    
+    # Only interpolate points inside the convex hull
+    valid_mask = simplex_indices >= 0
+    
+    if np.any(valid_mask):
+        valid_grid_points = grid_points[valid_mask]
+        valid_simplices = simplex_indices[valid_mask]
+        
+        # Get barycentric coordinates
+        for i, (grid_point, simplex_idx) in enumerate(zip(valid_grid_points, valid_simplices)):
+            # Get vertices of the triangle
+            triangle_vertices = tri.simplices[simplex_idx]
+            triangle_points = points[triangle_vertices]
+            triangle_values = values[triangle_vertices]
+            
+            # Calculate barycentric coordinates
+            # Using the standard barycentric coordinate formula
+            v0 = triangle_points[2] - triangle_points[0]
+            v1 = triangle_points[1] - triangle_points[0]
+            v2 = grid_point - triangle_points[0]
+            
+            dot00 = np.dot(v0, v0)
+            dot01 = np.dot(v0, v1)
+            dot02 = np.dot(v0, v2)
+            dot11 = np.dot(v1, v1)
+            dot12 = np.dot(v1, v2)
+            
+            inv_denom = 1 / (dot00 * dot11 - dot01 * dot01)
+            u = (dot11 * dot02 - dot01 * dot12) * inv_denom
+            v = (dot00 * dot12 - dot01 * dot02) * inv_denom
+            
+            # Barycentric coordinates (u, v, 1-u-v)
+            w0 = 1 - u - v
+            w1 = v
+            w2 = u
+            
+            # Interpolate value
+            interpolated_value = w0 * triangle_values[0] + w1 * triangle_values[1] + w2 * triangle_values[2]
+            interpolated[valid_mask] = np.where(
+                np.arange(len(interpolated))[valid_mask] == i, 
+                interpolated_value, 
+                interpolated[valid_mask]
+            )
+    
+    return interpolated
 
 
 # -------------------------------
@@ -153,7 +219,8 @@ def recursive_subdivision_geopandas(
     gdf_points: gpd.GeoDataFrame,
     min_samples,  # default value
     region_polygon: Optional[Polygon] = None,
-    _stages_accumulator: Optional[List[List[Polygon]]] = None
+    _stages_accumulator: Optional[List[List[Polygon]]] = None,
+    utm_crs: Optional[str] = None
 ) -> List[Polygon]:
     if region_polygon is not None:
         x_min, y_min, x_max, y_max = region_polygon.bounds
@@ -166,8 +233,9 @@ def recursive_subdivision_geopandas(
         ])
 
 # +++  GUARD: stop when the region is numerically tiny --- guards against infinite recursion if there are many points very close together
-    # Units are degrees; 1e-5° ≈ 1.1 m in latitude.
-    min_extent = 1e-5
+    # For UTM coordinates: 10 meters minimum extent
+    # For geographic coordinates: 1e-5° ≈ 1.1 m in latitude
+    min_extent = 10.0 if utm_crs else 1e-5
     if (x_max - x_min) < min_extent or (y_max - y_min) < min_extent:
         # If there are no points, return empty; otherwise treat this as a leaf.
         if len(gdf_points) == 0:
@@ -197,7 +265,7 @@ def recursive_subdivision_geopandas(
         sub_gdf = gdf_points[gdf_points.intersects(subrect)]
         if len(sub_gdf) >= min_samples:
             final_subregions.extend(
-                recursive_subdivision_geopandas(sub_gdf, min_samples, subrect, _stages_accumulator)
+                recursive_subdivision_geopandas(sub_gdf, min_samples, subrect, _stages_accumulator, utm_crs)
             )
         else:
             final_subregions.append(subrect)
@@ -205,11 +273,19 @@ def recursive_subdivision_geopandas(
 
 # This is the key function that builds the subregion GeoDataFrame.
 def build_subregion_gdf(gdf_points: gpd.GeoDataFrame, min_samples: int = 50) -> gpd.GeoDataFrame:
-#   Run recursive subdivision to build final subregion polygons.
-    final_polys = recursive_subdivision_geopandas(gdf_points, min_samples=min_samples)
-#  At this point there is no GeoDataFrame yet just raw polygon objects. Next line wraps polygons in a GeoDataFrame.
-    subregion_gdf = gpd.GeoDataFrame({'geometry': final_polys}, crs="EPSG:4326")
+    # Determine appropriate UTM CRS and transform points
+    utm_crs = get_utm_crs(gdf_points)
+    gdf_points_utm = gdf_points.to_crs(utm_crs)
+    print(f"[projection] Using UTM projection: {utm_crs}")
+    
+    # Run recursive subdivision in UTM coordinates
+    final_polys = recursive_subdivision_geopandas(gdf_points_utm, min_samples=min_samples, utm_crs=utm_crs)
+    
+    # Create GeoDataFrame in UTM, then transform back to WGS84
+    subregion_gdf = gpd.GeoDataFrame({'geometry': final_polys}, crs=utm_crs)
     subregion_gdf = subregion_gdf[subregion_gdf.is_valid & ~subregion_gdf.is_empty]
+    subregion_gdf = subregion_gdf.to_crs("EPSG:4326")
+    print(f"[projection] Created {len(subregion_gdf)} subregions, transformed back to WGS84")
     return subregion_gdf
 
 
@@ -221,6 +297,7 @@ def compute_average_temperature(
     sample_points_gdf: gpd.GeoDataFrame,
     predicate: str = "intersects"
 ) -> gpd.GeoDataFrame:
+    # Ensure both datasets are in the same CRS (WGS84) for spatial join
     if subregion_gdf.crs is None or subregion_gdf.crs.to_string() != "EPSG:4326":
         subregion_gdf = subregion_gdf.to_crs(4326)
     if sample_points_gdf.crs is None or sample_points_gdf.crs.to_string() != "EPSG:4326":
@@ -270,6 +347,21 @@ def write_fundamentals_csv(subregion_gdf: gpd.GeoDataFrame, path: str = "folium_
 
     df.to_csv(path, index=False)
     print(f"✅ Wrote fundamentals CSV for ArcGIS: {path} (rows={len(df)})")
+
+
+# -------------------------------
+# Coordinate system utilities
+# -------------------------------
+def get_utm_crs(gdf: gpd.GeoDataFrame) -> str:
+    """Determine appropriate UTM CRS for the data extent."""
+    if gdf.crs is None or gdf.crs.to_string() != "EPSG:4326":
+        gdf = gdf.to_crs(4326)
+    bounds = gdf.total_bounds
+    lon_c = (bounds[0] + bounds[2]) / 2.0
+    lat_c = (bounds[1] + bounds[3]) / 2.0
+    zone = int((lon_c + 180) // 6) + 1
+    epsg_code = 32600 + zone if lat_c >= 0 else 32700 + zone
+    return f"EPSG:{epsg_code}"
 
 
 # -------------------------------
@@ -497,23 +589,37 @@ def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: 
 
 def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Rectangles + Contour Overlay') -> None:
     valid = subregion_gdf.dropna(subset=['avg_temperature'])
-    xs = valid['centroid'].apply(lambda p: p.x).values
-    ys = valid['centroid'].apply(lambda p: p.y).values
-    temps = valid['avg_temperature'].values
+    
+    # Transform to UTM for accurate interpolation
+    utm_crs = get_utm_crs(valid)
+    valid_utm = valid.to_crs(utm_crs)
+    
+    # Get UTM centroids from the transformed polygon geometry
+    utm_centroids = valid_utm.geometry.centroid
+    xs = utm_centroids.x.values
+    ys = utm_centroids.y.values
+    temps = valid_utm['avg_temperature'].values
 
     xi = np.linspace(xs.min(), xs.max(), 300)
     yi = np.linspace(ys.min(), ys.max(), 300)
     xi, yi = np.meshgrid(xi, yi)
 
-    from scipy.interpolate import griddata
-    zi = griddata((xs, ys), temps, (xi, yi), method='linear')
+    # Use Delaunay triangulation interpolation
+    points = np.column_stack((xs, ys))
+    grid_points = np.column_stack((xi.ravel(), yi.ravel()))
+    zi_flat = delaunay_interpolate(points, temps, grid_points)
+    zi = zi_flat.reshape(xi.shape)
+
+    # Transform grid coordinates back to WGS84 for plotting
+    transformer = Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
+    xi_wgs, yi_wgs = transformer.transform(xi, yi)
 
     fig, ax = plt.subplots(figsize=(10, 10))
     subregion_gdf.plot(
         ax=ax, column='avg_temperature', cmap=HIGH_CONTRAST_CMAP,
         linewidth=0.5, edgecolor='black'
     )
-    contour = ax.contourf(xi, yi, zi, levels=20, cmap=HIGH_CONTRAST_CMAP, alpha=0.5)
+    contour = ax.contourf(xi_wgs, yi_wgs, zi, levels=20, cmap=HIGH_CONTRAST_CMAP, alpha=0.5)
     plt.colorbar(contour, ax=ax, label='Avg Temperature (°F)')
     ax.set_title(title)
     ax.set_xlabel('Longitude')
@@ -524,19 +630,33 @@ def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = '
 
 def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Contour Map (No Grid)') -> None:
     valid = subregion_gdf.dropna(subset=['avg_temperature'])
-    xs = valid['centroid'].apply(lambda p: p.x).values
-    ys = valid['centroid'].apply(lambda p: p.y).values
-    temps = valid['avg_temperature'].values
+    
+    # Transform to UTM for accurate interpolation
+    utm_crs = get_utm_crs(valid)
+    valid_utm = valid.to_crs(utm_crs)
+    
+    # Get UTM centroids from the transformed polygon geometry
+    utm_centroids = valid_utm.geometry.centroid
+    xs = utm_centroids.x.values
+    ys = utm_centroids.y.values
+    temps = valid_utm['avg_temperature'].values
 
     xi = np.linspace(xs.min(), xs.max(), 300)
     yi = np.linspace(ys.min(), ys.max(), 300)
     xi, yi = np.meshgrid(xi, yi)
 
-    from scipy.interpolate import griddata
-    zi = griddata((xs, ys), temps, (xi, yi), method='linear')
+    # Use Delaunay triangulation interpolation
+    points = np.column_stack((xs, ys))
+    grid_points = np.column_stack((xi.ravel(), yi.ravel()))
+    zi_flat = delaunay_interpolate(points, temps, grid_points)
+    zi = zi_flat.reshape(xi.shape)
+
+    # Transform grid coordinates back to WGS84 for plotting
+    transformer = Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
+    xi_wgs, yi_wgs = transformer.transform(xi, yi)
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    contour = ax.contourf(xi, yi, zi, levels=20, cmap=HIGH_CONTRAST_CMAP)
+    contour = ax.contourf(xi_wgs, yi_wgs, zi, levels=20, cmap=HIGH_CONTRAST_CMAP)
     plt.colorbar(contour, ax=ax, label="Avg Temperature (°F)")
     ax.set_title(title)
     ax.set_xlabel("Longitude")
@@ -590,20 +710,48 @@ def save_contour_image(
     if len(xs) < 3:
         raise ValueError("Not enough points to build a contour surface (need >=3).")
 
-    # --- grid + interpolation ---
+    # --- grid + interpolation in UTM coordinates ---
+    # Transform to UTM for accurate interpolation
+    utm_crs = get_utm_crs(subregion_gdf)
+    subregion_gdf_utm = subregion_gdf.to_crs(utm_crs)
+    
+    # Recalculate coordinates in UTM
+    if use_means:
+        # Transform mean points to UTM
+        mean_points_wgs = [Point(lon, lat) for lon, lat in zip(valid['mean_lon'], valid['mean_lat'])]
+        mean_gdf = gpd.GeoDataFrame(geometry=mean_points_wgs, crs='EPSG:4326')
+        mean_gdf_utm = mean_gdf.to_crs(utm_crs)
+        xs = mean_gdf_utm.geometry.x.values
+        ys = mean_gdf_utm.geometry.y.values
+    else:
+        # Use UTM centroids
+        valid_utm = subregion_gdf_utm.dropna(subset=['avg_temperature'])
+        xs = valid_utm['centroid'].apply(lambda p: p.x).astype(float).values
+        ys = valid_utm['centroid'].apply(lambda p: p.y).astype(float).values
+    
     xi = np.linspace(xs.min(), xs.max(), 400)
     yi = np.linspace(ys.min(), ys.max(), 400)
     X, Y = np.meshgrid(xi, yi)
-    Z = griddata((xs, ys), temps, (X, Y), method='linear')
+    
+    # Use Delaunay triangulation interpolation
+    points = np.column_stack((xs, ys))
+    grid_points = np.column_stack((X.ravel(), Y.ravel()))
+    Z_flat = delaunay_interpolate(points, temps, grid_points)
+    Z = Z_flat.reshape(X.shape)
 
-    # --- mask void areas outside kept subregions ---
-    keep_union = unary_union(subregion_gdf.geometry.values) if not subregion_gdf.empty else None
+    # --- mask void areas outside kept subregions (in UTM) ---
+    keep_union = unary_union(subregion_gdf_utm.geometry.values) if not subregion_gdf_utm.empty else None
     if keep_union is not None and not keep_union.is_empty:
         keep_prep = prep(keep_union)
         pts = (Point(x, y) for x, y in zip(X.ravel(), Y.ravel()))
         inside = np.fromiter((keep_prep.covers(p) for p in pts), dtype=bool, count=X.size).reshape(X.shape)
         Z[~inside] = np.nan
         print("✅ Applied transparent mask to void regions (outside kept subregions).")
+    
+    # --- Transform grid coordinates back to WGS84 for plotting ---
+    from pyproj import Transformer
+    transformer = Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
+    xi_wgs, yi_wgs = transformer.transform(xi, yi)
 
     # --- make masked array so NaNs -> transparent ---
     masked_Z = ma.array(Z, mask=np.isnan(Z))
@@ -623,12 +771,12 @@ def save_contour_image(
     ax.set_position([0, 0, 1, 1])
     ax.imshow(
         masked_Z,
-        extent=(xi.min(), xi.max(), yi.min(), yi.max()),
+        extent=(xi_wgs.min(), xi_wgs.max(), yi_wgs.min(), yi_wgs.max()),
         origin='lower',
         cmap=cmap,
         interpolation='bilinear'  # 'nearest' if you want crisp pixels
     )
-    # --- draw bounding outlines for each rectangle ---
+    # --- draw bounding outlines for each rectangle (in WGS84) ---
     for geom in subregion_gdf.geometry:
         if geom is None or geom.is_empty:
             continue
@@ -642,13 +790,13 @@ def save_contour_image(
                 x, y = poly.exterior.xy
                 ax.plot(x, y, color="black", linewidth=0.6, alpha=1.0)
 
-    ax.set_xlim(xi.min(), xi.max())
-    ax.set_ylim(yi.min(), yi.max())
+    ax.set_xlim(xi_wgs.min(), xi_wgs.max())
+    ax.set_ylim(yi_wgs.min(), yi_wgs.max())
 
     plt.savefig(contour_path, bbox_inches='tight', pad_inches=0, transparent=True)
     plt.close(fig)
 
-    bounds = [[float(yi.min()), float(xi.min())], [float(yi.max()), float(xi.max())]]
+    bounds = [[float(yi_wgs.min()), float(xi_wgs.min())], [float(yi_wgs.max()), float(xi_wgs.max())]]
     print(f"✅ Contour image (transparent voids) from {src}: {contour_path}  bounds={bounds}")
     return bounds, contour_path
 
@@ -688,15 +836,6 @@ def write_kml_ground_overlay(
         f.write(kml)
 
     print(f"✅ Wrote KML overlay: {kml_filename}")
-
-    # Package KML + image into a KMZ (ZIP archive)
-    kmz_filename = kml_filename.replace(".kml", ".kmz")
-    with zipfile.ZipFile(kmz_filename, "w", zipfile.ZIP_DEFLATED) as kmz:
-        kmz.write(kml_filename, arcname=os.path.basename(kml_filename))
-        if os.path.exists(image_filename):
-            kmz.write(image_filename, arcname=os.path.basename(image_filename))
-
-    print(f"✅ Wrote KMZ overlay: {kmz_filename}")
 
 # -------------------------------
 # Simple raster Folium map (used if --with-raster)
@@ -742,7 +881,6 @@ def build_pipeline(
     raster_png: str = "contour_overlay.png",
     raster_html: str = "folium_map.html",
     do_static_plots: bool = True,
-    do_kriging_plot: bool = False,
     folium_output_fundamentals_csv: str = "folium_output_fundamentals.csv",
 ) -> BuildArtifacts:
     gdf_points = load_points_csv(csv_path)
@@ -795,41 +933,12 @@ def build_pipeline(
         plot_rectangles_and_contours(subregions)
         plot_contour_only(subregions)
 
-    if do_kriging_plot:
-        plot_kriging_contour(subregions)
-
     return BuildArtifacts(
         gdf_points=gdf_points,
         subregions=subregions,
         image_bounds=image_bounds,
         contour_png=(raster_png if with_raster else None)
     )
-
-
-# -------------------------------
-# Kriging visualization
-# -------------------------------
-def plot_kriging_contour(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Contour via Kriging') -> None:
-    valid = subregion_gdf.dropna(subset=['avg_temperature'])
-    xs = valid['centroid'].apply(lambda p: p.x).values
-    ys = valid['centroid'].apply(lambda p: p.y).values
-    temps = valid['avg_temperature'].values
-
-    grid_x = np.linspace(xs.min(), xs.max(), 300)
-    grid_y = np.linspace(ys.min(), ys.max(), 300)
-    grid_xx, grid_yy = np.meshgrid(grid_x, grid_y)
-
-    OK = OrdinaryKriging(xs, ys, temps, variogram_model='linear', verbose=False, enable_plotting=False)
-    z_kriged, ss = OK.execute('grid', grid_x, grid_y)
-
-    fig, ax = plt.subplots(figsize=(10, 10))
-    contour = ax.contourf(grid_xx, grid_yy, z_kriged, levels=20, cmap=HIGH_CONTRAST_CMAP)
-    plt.colorbar(contour, ax=ax, label="Avg Temperature (°F)")
-    ax.set_title(title)
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.set_aspect("equal", adjustable="box")
-    plt.show()
 
 
 # -------------------------------
@@ -847,7 +956,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--raster-png", default="contour_overlay.png", help="Filename for saved transparent contour PNG.")
     p.add_argument("--raster-html", default="folium_map.html", help="Output HTML for Folium raster map.")
     p.add_argument("--no-static-plots", action="store_true", help="Disable Matplotlib static plots.")
-    p.add_argument("--kriging", action="store_true", help="Show Kriging contour plot at the end.")
     p.add_argument("--folium-output-fundamentals", default="folium_output_fundamentals.csv",
                    help="Output CSV of per-subregion fundamentals for ArcGIS "
                         "(avg_lat, avg_lon, average_temperature_F, standard_deviation_F, number_of_data_points).")
@@ -868,7 +976,6 @@ def main() -> None:
         raster_png=args.raster_png,
         raster_html=args.raster_html,
         do_static_plots=not args.no_static_plots,
-        do_kriging_plot=args.kriging,
         folium_output_fundamentals_csv=args.folium_output_fundamentals,
     )
 
@@ -899,6 +1006,6 @@ if __name__ == "__main__":
 
 # To run the pipeline with default parameters:
 
-# python RecursiveSubdivisionTemperatureGrid.py --csv InputData.csv 
+# python RecursiveSubdivisionTemperatureGrid.py --csv <file-with-InputData.csv> 
 #
 # 
