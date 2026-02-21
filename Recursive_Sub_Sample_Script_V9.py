@@ -25,6 +25,7 @@ import json
 import math
 import os
 import time
+import zipfile
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
@@ -836,6 +837,14 @@ def write_kml_ground_overlay(
         f.write(kml)
 
     print(f"✅ Wrote KML overlay: {kml_filename}")
+
+    # Package KML + image into a KMZ (ZIP archive)
+    kmz_filename = kml_filename.replace(".kml", ".kmz")
+    with zipfile.ZipFile(kmz_filename, "w", zipfile.ZIP_DEFLATED) as kmz:
+        kmz.write(kml_filename, arcname=os.path.basename(kml_filename))
+        if os.path.exists(image_filename):
+            kmz.write(image_filename, arcname=os.path.basename(image_filename))
+    print(f"✅ Wrote KMZ overlay: {kmz_filename}")
 
 # -------------------------------
 # Simple raster Folium map (used if --with-raster)
