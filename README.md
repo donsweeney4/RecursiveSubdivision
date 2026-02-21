@@ -53,6 +53,8 @@ python Recursive_Sub_Sample_Script_V9.py --csv InputData.csv
 | `--raster-png` | `contour_overlay.png` | Filename for saved transparent contour PNG |
 | `--raster-html` | `folium_map.html` | Output HTML for Folium raster map |
 | `--no-static-plots` | off | Disable Matplotlib static plots |
+| `--no-borders` | on | Hide rectangle borders in static plots and contour PNG (default) |
+| `--show-borders` | off | Show rectangle borders in static plots and contour PNG |
 | `--folium-output-fundamentals` | `folium_output_fundamentals.csv` | Output CSV of per-subregion statistics for ArcGIS |
 
 ### Examples

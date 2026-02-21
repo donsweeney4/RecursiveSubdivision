@@ -481,7 +481,8 @@ def create_folium_map_with_layers(
             bounds, contour_png_path = save_contour_image(
                 subregion_gdf,
                 image_filename=centroid_contour_png,
-                output_dir='.'
+                output_dir='.',
+                no_borders=True
             )
             ImageOverlay(
                 name="Centroid Contours (transparent voids)",
@@ -521,14 +522,14 @@ def create_folium_map_with_layers(
 # -------------------------------
 # Static plotting (optional)
 # -------------------------------
-def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature-Colored Subregions') -> None:
+def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature-Colored Subregions', no_borders: bool = True) -> None:
     fig, ax = plt.subplots(figsize=(10, 10))
     subregion_gdf.plot(
         ax=ax,
         column='avg_temperature',
         cmap=HIGH_CONTRAST_CMAP,
-        linewidth=0.5,
-        edgecolor='black',
+        linewidth=0 if no_borders else 0.5,
+        edgecolor='none' if no_borders else 'black',
         legend=True,
         legend_kwds={'label': "Avg Temperature (°F)"}
     )
@@ -539,7 +540,7 @@ def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: 
     plt.show()
 
 
-def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Rectangles + Contour Overlay') -> None:
+def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Rectangles + Contour Overlay', no_borders: bool = True) -> None:
     valid = subregion_gdf.dropna(subset=['avg_temperature'])
     
     # Transform to UTM for accurate interpolation
@@ -569,7 +570,8 @@ def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = '
     fig, ax = plt.subplots(figsize=(10, 10))
     subregion_gdf.plot(
         ax=ax, column='avg_temperature', cmap=HIGH_CONTRAST_CMAP,
-        linewidth=0.5, edgecolor='black'
+        linewidth=0 if no_borders else 0.5,
+        edgecolor='none' if no_borders else 'black'
     )
     contour = ax.contourf(xi_wgs, yi_wgs, zi, levels=20, cmap=HIGH_CONTRAST_CMAP, alpha=0.5)
     plt.colorbar(contour, ax=ax, label='Avg Temperature (°F)')
@@ -623,7 +625,8 @@ def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature
 def save_contour_image(
     subregion_gdf: gpd.GeoDataFrame,
     image_filename: str = 'centroid_contour.png',
-    output_dir: str = '.'
+    output_dir: str = '.',
+    no_borders: bool = True
 ) -> Tuple[List[List[float]], str]:
     """
     Save a transparent contour PNG clipped to kept subregions.
@@ -729,18 +732,19 @@ def save_contour_image(
         interpolation='bilinear'  # 'nearest' if you want crisp pixels
     )
     # --- draw bounding outlines for each rectangle (in WGS84) ---
-    for geom in subregion_gdf.geometry:
-        if geom is None or geom.is_empty:
-            continue
+    if not no_borders:
+        for geom in subregion_gdf.geometry:
+            if geom is None or geom.is_empty:
+                continue
 
-        if geom.geom_type == "Polygon":
-            x, y = geom.exterior.xy
-            ax.plot(x, y, color="black", linewidth=0.4, alpha=0.8)
+            if geom.geom_type == "Polygon":
+                x, y = geom.exterior.xy
+                ax.plot(x, y, color="black", linewidth=0.4, alpha=0.8)
 
-        elif geom.geom_type == "MultiPolygon":
-            for poly in geom.geoms:
-                x, y = poly.exterior.xy
-                ax.plot(x, y, color="black", linewidth=0.6, alpha=1.0)
+            elif geom.geom_type == "MultiPolygon":
+                for poly in geom.geoms:
+                    x, y = poly.exterior.xy
+                    ax.plot(x, y, color="black", linewidth=0.6, alpha=1.0)
 
     ax.set_xlim(xi_wgs.min(), xi_wgs.max())
     ax.set_ylim(yi_wgs.min(), yi_wgs.max())
@@ -841,6 +845,7 @@ def build_pipeline(
     raster_png: str = "contour_overlay.png",
     raster_html: str = "folium_map.html",
     do_static_plots: bool = True,
+    no_borders: bool = True,
     folium_output_fundamentals_csv: str = "folium_output_fundamentals.csv",
 ) -> BuildArtifacts:
     gdf_points = load_points_csv(csv_path)
@@ -883,14 +888,14 @@ def build_pipeline(
 
     image_bounds = None
     if with_raster:
-        image_bounds, _mask = save_contour_image(subregions, image_filename=raster_png, output_dir=".")
+        image_bounds, _mask = save_contour_image(subregions, image_filename=raster_png, output_dir=".", no_borders=no_borders)
         create_folium_map_with_contour(raster_png, image_bounds, output_html=raster_html)
         print(f"✅ Wrote Folium raster map: {raster_html}")
 
     # Optional static plots
     if do_static_plots:
-        plot_temperature_colored_subregions(subregions)
-        plot_rectangles_and_contours(subregions)
+        plot_temperature_colored_subregions(subregions, no_borders=no_borders)
+        plot_rectangles_and_contours(subregions, no_borders=no_borders)
         plot_contour_only(subregions)
 
     return BuildArtifacts(
@@ -916,6 +921,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--raster-png", default="contour_overlay.png", help="Filename for saved transparent contour PNG.")
     p.add_argument("--raster-html", default="folium_map.html", help="Output HTML for Folium raster map.")
     p.add_argument("--no-static-plots", action="store_true", help="Disable Matplotlib static plots.")
+    p.add_argument("--no-borders", dest="no_borders", action="store_true", default=True, help="Hide rectangle borders in static plots (default).")
+    p.add_argument("--show-borders", dest="no_borders", action="store_false", help="Show rectangle borders in static plots.")
     p.add_argument("--folium-output-fundamentals", default="folium_output_fundamentals.csv",
                    help="Output CSV of per-subregion fundamentals for ArcGIS "
                         "(avg_lat, avg_lon, average_temperature_F, standard_deviation_F, number_of_data_points).")
@@ -936,6 +943,7 @@ def main() -> None:
         raster_png=args.raster_png,
         raster_html=args.raster_html,
         do_static_plots=not args.no_static_plots,
+        no_borders=args.no_borders,
         folium_output_fundamentals_csv=args.folium_output_fundamentals,
     )
 
@@ -947,7 +955,8 @@ def main() -> None:
         image_bounds, _ = save_contour_image(
             artifacts.subregions,
             image_filename="contour_overlay.png",
-            output_dir="."
+            output_dir=".",
+            no_borders=args.no_borders
         )
 
     write_kml_ground_overlay(
