@@ -40,7 +40,6 @@ from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 from shapely.prepared import prep  # optional but recommended
 from scipy.interpolate import griddata
-from scipy.spatial import Delaunay
 from pyproj import Transformer
 
 import folium
@@ -72,69 +71,21 @@ HIGH_CONTRAST_CMAP = get_custom_cmap()
 # -------------------------------
 def delaunay_interpolate(points, values, grid_points):
     """
-    Perform Delaunay triangulation interpolation.
-    
+    Perform Delaunay triangulation interpolation (linear/barycentric).
+
+    Uses scipy.griddata with method='linear', which builds a Delaunay
+    triangulation and interpolates within each triangle using barycentric
+    coordinates. Points outside the convex hull return NaN.
+
     Args:
         points: (N, 2) array of sample point coordinates
         values: (N,) array of values at sample points
         grid_points: (M, 2) array of grid points to interpolate to
-    
+
     Returns:
-        (M,) array of interpolated values
+        (M,) array of interpolated values (NaN outside convex hull)
     """
-    # Create Delaunay triangulation
-    tri = Delaunay(points)
-    
-    # Find which triangle each grid point belongs to
-    simplex_indices = tri.find_simplex(grid_points)
-    
-    # Initialize output array
-    interpolated = np.full(len(grid_points), np.nan)
-    
-    # Only interpolate points inside the convex hull
-    valid_mask = simplex_indices >= 0
-    
-    if np.any(valid_mask):
-        valid_grid_points = grid_points[valid_mask]
-        valid_simplices = simplex_indices[valid_mask]
-        
-        # Get barycentric coordinates
-        for i, (grid_point, simplex_idx) in enumerate(zip(valid_grid_points, valid_simplices)):
-            # Get vertices of the triangle
-            triangle_vertices = tri.simplices[simplex_idx]
-            triangle_points = points[triangle_vertices]
-            triangle_values = values[triangle_vertices]
-            
-            # Calculate barycentric coordinates
-            # Using the standard barycentric coordinate formula
-            v0 = triangle_points[2] - triangle_points[0]
-            v1 = triangle_points[1] - triangle_points[0]
-            v2 = grid_point - triangle_points[0]
-            
-            dot00 = np.dot(v0, v0)
-            dot01 = np.dot(v0, v1)
-            dot02 = np.dot(v0, v2)
-            dot11 = np.dot(v1, v1)
-            dot12 = np.dot(v1, v2)
-            
-            inv_denom = 1 / (dot00 * dot11 - dot01 * dot01)
-            u = (dot11 * dot02 - dot01 * dot12) * inv_denom
-            v = (dot00 * dot12 - dot01 * dot02) * inv_denom
-            
-            # Barycentric coordinates (u, v, 1-u-v)
-            w0 = 1 - u - v
-            w1 = v
-            w2 = u
-            
-            # Interpolate value
-            interpolated_value = w0 * triangle_values[0] + w1 * triangle_values[1] + w2 * triangle_values[2]
-            interpolated[valid_mask] = np.where(
-                np.arange(len(interpolated))[valid_mask] == i, 
-                interpolated_value, 
-                interpolated[valid_mask]
-            )
-    
-    return interpolated
+    return griddata(points, values, grid_points, method='linear')
 
 
 # -------------------------------
