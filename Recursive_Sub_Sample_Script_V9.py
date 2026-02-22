@@ -119,41 +119,18 @@ def load_points_csv(path: str) -> gpd.GeoDataFrame:
         raise ValueError(f"Could not find longitude/latitude columns in {list(df.columns)}")
     lon_col, lat_col = norm[lon_key], norm[lat_key]
 
-    # Find temperature-like column
-    temp_candidates = [
-        "temperature", "temp", "degf", "deg_f", "°f", "temperature (°f)",
-        "degc", "deg_c", "°c", "temperature (°c)"
-    ]
-    temp_key = next((k for k in temp_candidates if k in norm), None)
-    if temp_key is None:
-        temp_key = next((k for k in norm if "temp" in k), None)
-    if temp_key is None:
-        raise ValueError(f"Could not find a temperature column in {list(df.columns)}")
-    temp_col = norm[temp_key]
-
-    # Coerce temp to numeric (strip units)
-    temp_numeric = (
-        df[temp_col].astype(str).str.extract(r"([-+]?\d*\.?\d+)").astype(float)[0]
-    )
-
-    print(f"[loader] Detected temperature column: '{temp_key}'")
-    is_celsius = ("c" in temp_key or "C" in temp_key) and all(
-        s not in temp_key for s in ["degf", "_f", "°F", "f)"]
-    )
-    if is_celsius:
-        print("[loader] Detected temperature in °C, converting to °F...")
-        temp_f = temp_numeric * 9.0 / 5.0 + 32.0
-    else:
-        print("[loader] Detected temperature in °F, no conversion needed.")
-        temp_f = temp_numeric
+    # Temperature column is always corrected_temperature_f
+    temp_col = "corrected_temperature_f"
+    if temp_col not in df.columns:
+        raise ValueError(f"Could not find '{temp_col}' column in {list(df.columns)}")
 
     use = pd.DataFrame({
         "longitude": pd.to_numeric(df[lon_col], errors="coerce"),
         "latitude": pd.to_numeric(df[lat_col], errors="coerce"),
-        "temperature": pd.to_numeric(temp_f, errors="coerce")
+        "temperature": pd.to_numeric(df[temp_col], errors="coerce")
     }).dropna(subset=["longitude", "latitude", "temperature"])
 
-    print(f"[loader] Using lon='{lon_col}', lat='{lat_col}', temp='{temp_col}' (stored in °F).")
+    print(f"[loader] Using lon='{lon_col}', lat='{lat_col}', temp='{temp_col}' (°F).")
     print(f"[loader] Loaded {len(use)} valid points from '{path}'.")
 
     geometry = [Point(xy) for xy in zip(use["longitude"], use["latitude"])]
