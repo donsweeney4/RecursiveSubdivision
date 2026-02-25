@@ -510,7 +510,10 @@ def create_folium_map_with_layers(
 # -------------------------------
 # Static plotting (optional)
 # -------------------------------
-def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature-Colored Subregions', no_borders: bool = True) -> None:
+
+# Static Plot 1 - Rectangles colored by average temperature (no borders)
+
+def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: str = 'Static 1. SubregionTemperatures', no_borders: bool = True) -> None:
     fig, ax = plt.subplots(figsize=(10, 10))
     subregion_gdf.plot(
         ax=ax,
@@ -525,10 +528,11 @@ def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: 
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     ax.set_aspect("equal", adjustable="box")
-    plt.show()
+    plt.show(block=False)
 
+# Static Plot 2
 
-def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Rectangles + Contour Overlay', no_borders: bool = True) -> None:
+def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = 'Static 2. Subregion Temperatures + Contour Overlay', no_borders: bool = True) -> None:
     valid = subregion_gdf.dropna(subset=['avg_temperature'])
 
     # Compute Delaunay triangulation in UTM for geographic accuracy
@@ -561,10 +565,11 @@ def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = '
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.set_aspect('equal', adjustable='box')
-    plt.show()
+    plt.show( block=False  )
 
+# Static Plot 3 - Contour only (no rectangles, no borders)
 
-def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Contour Map (No Grid)') -> None:
+def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Static 3. Temperature Contour (No Subregions)') -> None:
     valid = subregion_gdf.dropna(subset=['avg_temperature'])
 
     # Compute Delaunay triangulation in UTM for geographic accuracy
@@ -592,7 +597,7 @@ def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     ax.set_aspect("equal", adjustable="box")
-    plt.show()
+    plt.show(block=False)
 
 
 # -------------------------------
@@ -600,7 +605,7 @@ def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature
 # -------------------------------
 def save_contour_image(
     subregion_gdf: gpd.GeoDataFrame,
-    image_filename: str = 'centroid_contour.png',
+    image_filename: str = 'contour_using_controids.png',
     output_dir: str = '.',
     no_borders: bool = True
 ) -> Tuple[List[List[float]], str]:
@@ -874,6 +879,7 @@ def build_pipeline(
         plot_temperature_colored_subregions(subregions, no_borders=no_borders)
         plot_rectangles_and_contours(subregions, no_borders=no_borders)
         plot_contour_only(subregions)
+        plt.show()  # block until all plot windows are closed
 
     return BuildArtifacts(
         gdf_points=gdf_points,
