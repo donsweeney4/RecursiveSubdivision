@@ -39,6 +39,8 @@ from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 from shapely.prepared import prep  # optional but recommended
 from scipy.interpolate import griddata
+from scipy.spatial import Delaunay as SpatialDelaunay
+import matplotlib.tri as mtri
 from pyproj import Transformer
 
 import folium
@@ -50,19 +52,30 @@ from folium.plugins import FastMarkerCluster
 # -------------------------------
 # Custom Matplotlib Colormap
 # -------------------------------
-def get_custom_cmap():
-    """Create a Matplotlib colormap using a high-contrast scheme."""
-    hex_colors = [
+COLOR_TABLES = {
+    1: [
+        "#0000FF",  # blue (low)
+        "#00FFFF",  # cyan
+        "#00FF00",  # green (mid)
+        "#FFFF00",  # yellow
+        "#FF0000",  # red (high)
+    ],
+    2: [
         "#0000FF",  # blue (low)
         "#0000FF",
         "#00FF00",  # green (mid)
         "#00FF00",
         "#FF0000",  # red (high)
         "#FF0000",
-    ]
+    ],
+}
+
+def get_custom_cmap(color_table: int = 1):
+    """Create a Matplotlib colormap from the selected color table."""
+    hex_colors = COLOR_TABLES[color_table]
     return LinearSegmentedColormap.from_list("high_contrast_temp", hex_colors, N=256)
 
-HIGH_CONTRAST_CMAP = get_custom_cmap()
+HIGH_CONTRAST_CMAP = get_custom_cmap(1)
 
 
 # -------------------------------
@@ -517,30 +530,25 @@ def plot_temperature_colored_subregions(subregion_gdf: gpd.GeoDataFrame, title: 
 
 def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Rectangles + Contour Overlay', no_borders: bool = True) -> None:
     valid = subregion_gdf.dropna(subset=['avg_temperature'])
-    
-    # Transform to UTM for accurate interpolation
+
+    # Compute Delaunay triangulation in UTM for geographic accuracy
     utm_crs = get_utm_crs(valid)
     valid_utm = valid.to_crs(utm_crs)
-    
-    # Get UTM centroids from the transformed polygon geometry
     utm_centroids = valid_utm.geometry.centroid
-    xs = utm_centroids.x.values
-    ys = utm_centroids.y.values
+    xs_utm = utm_centroids.x.values
+    ys_utm = utm_centroids.y.values
     temps = valid_utm['avg_temperature'].values
 
-    xi = np.linspace(xs.min(), xs.max(), 300)
-    yi = np.linspace(ys.min(), ys.max(), 300)
-    xi, yi = np.meshgrid(xi, yi)
+    tri = SpatialDelaunay(np.column_stack((xs_utm, ys_utm)))
 
-    # Use Delaunay triangulation interpolation
-    points = np.column_stack((xs, ys))
-    grid_points = np.column_stack((xi.ravel(), yi.ravel()))
-    zi_flat = delaunay_interpolate(points, temps, grid_points)
-    zi = zi_flat.reshape(xi.shape)
+    # Get WGS84 centroid coordinates for plotting
+    valid_wgs = valid.to_crs("EPSG:4326")
+    wgs_centroids = valid_wgs.geometry.centroid
+    xs_wgs = wgs_centroids.x.values
+    ys_wgs = wgs_centroids.y.values
 
-    # Transform grid coordinates back to WGS84 for plotting
-    transformer = Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
-    xi_wgs, yi_wgs = transformer.transform(xi, yi)
+    # Build triangulation in WGS84 using triangle indices from UTM Delaunay
+    triang = mtri.Triangulation(xs_wgs, ys_wgs, triangles=tri.simplices)
 
     fig, ax = plt.subplots(figsize=(10, 10))
     subregion_gdf.plot(
@@ -548,7 +556,7 @@ def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = '
         linewidth=0 if no_borders else 0.5,
         edgecolor='none' if no_borders else 'black'
     )
-    contour = ax.contourf(xi_wgs, yi_wgs, zi, levels=20, cmap=HIGH_CONTRAST_CMAP, alpha=0.5)
+    contour = ax.tricontourf(triang, temps, levels=20, cmap=HIGH_CONTRAST_CMAP, alpha=0.5)
     plt.colorbar(contour, ax=ax, label='Avg Temperature (°F)')
     ax.set_title(title)
     ax.set_xlabel('Longitude')
@@ -559,33 +567,28 @@ def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = '
 
 def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature Contour Map (No Grid)') -> None:
     valid = subregion_gdf.dropna(subset=['avg_temperature'])
-    
-    # Transform to UTM for accurate interpolation
+
+    # Compute Delaunay triangulation in UTM for geographic accuracy
     utm_crs = get_utm_crs(valid)
     valid_utm = valid.to_crs(utm_crs)
-    
-    # Get UTM centroids from the transformed polygon geometry
     utm_centroids = valid_utm.geometry.centroid
-    xs = utm_centroids.x.values
-    ys = utm_centroids.y.values
+    xs_utm = utm_centroids.x.values
+    ys_utm = utm_centroids.y.values
     temps = valid_utm['avg_temperature'].values
 
-    xi = np.linspace(xs.min(), xs.max(), 300)
-    yi = np.linspace(ys.min(), ys.max(), 300)
-    xi, yi = np.meshgrid(xi, yi)
+    tri = SpatialDelaunay(np.column_stack((xs_utm, ys_utm)))
 
-    # Use Delaunay triangulation interpolation
-    points = np.column_stack((xs, ys))
-    grid_points = np.column_stack((xi.ravel(), yi.ravel()))
-    zi_flat = delaunay_interpolate(points, temps, grid_points)
-    zi = zi_flat.reshape(xi.shape)
+    # Get WGS84 centroid coordinates for plotting
+    valid_wgs = valid.to_crs("EPSG:4326")
+    wgs_centroids = valid_wgs.geometry.centroid
+    xs_wgs = wgs_centroids.x.values
+    ys_wgs = wgs_centroids.y.values
 
-    # Transform grid coordinates back to WGS84 for plotting
-    transformer = Transformer.from_crs(utm_crs, "EPSG:4326", always_xy=True)
-    xi_wgs, yi_wgs = transformer.transform(xi, yi)
+    # Build triangulation in WGS84 using triangle indices from UTM Delaunay
+    triang = mtri.Triangulation(xs_wgs, ys_wgs, triangles=tri.simplices)
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    contour = ax.contourf(xi_wgs, yi_wgs, zi, levels=20, cmap=HIGH_CONTRAST_CMAP)
+    contour = ax.tricontourf(triang, temps, levels=20, cmap=HIGH_CONTRAST_CMAP)
     plt.colorbar(contour, ax=ax, label="Avg Temperature (°F)")
     ax.set_title(title)
     ax.set_xlabel("Longitude")
@@ -899,6 +902,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--no-static-plots", action="store_true", help="Disable Matplotlib static plots.")
     p.add_argument("--no-borders", dest="no_borders", action="store_true", default=True, help="Hide rectangle borders in static plots (default).")
     p.add_argument("--show-borders", dest="no_borders", action="store_false", help="Show rectangle borders in static plots.")
+    p.add_argument("--color-table", type=int, default=1, choices=[1, 2],
+                   help="Color table to use: 1 = blue-cyan-green-yellow-red (default), 2 = blue-green-red.")
     p.add_argument("--folium-output-fundamentals", default="folium_output_fundamentals.csv",
                    help="Output CSV of per-subregion fundamentals for ArcGIS "
                         "(avg_lat, avg_lon, average_temperature_F, standard_deviation_F, number_of_data_points).")
@@ -906,7 +911,9 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    global HIGH_CONTRAST_CMAP
     args = _parse_args()
+    HIGH_CONTRAST_CMAP = get_custom_cmap(args.color_table)
 
     artifacts = build_pipeline(
         csv_path=args.csv_path,
