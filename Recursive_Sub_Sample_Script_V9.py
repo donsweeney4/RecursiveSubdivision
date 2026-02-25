@@ -1,4 +1,3 @@
-
 """
 temperature_grid.py
 
@@ -314,12 +313,11 @@ def add_centroids_wgs84(subregion_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 # Colors
 # -------------------------------
 def _safe_linear_colormap(vmin: float, vmax: float, reverse: bool = False):
+    # Sample colors from HIGH_CONTRAST_CMAP so Folium uses the same colormap
+    n_samples = 256
     colors = [
-        "#0000FF", "#0000FF",
-        "#0000FF", "#0000FF",
-        "#00FF00", "#00FF00",
-        "#FF0000", "#FF0000",
-         "#FF0000", "#FF0000",
+        "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+        for r, g, b, _a in (HIGH_CONTRAST_CMAP(i / (n_samples - 1)) for i in range(n_samples))
     ]
     if reverse:
         colors = list(reversed(colors))
@@ -656,10 +654,11 @@ def save_contour_image(
         xs = mean_gdf_utm.geometry.x.values
         ys = mean_gdf_utm.geometry.y.values
     else:
-        # Use UTM centroids
+        # Use UTM centroids from the active UTM geometry
         valid_utm = subregion_gdf_utm.dropna(subset=['avg_temperature'])
-        xs = valid_utm['centroid'].apply(lambda p: p.x).astype(float).values
-        ys = valid_utm['centroid'].apply(lambda p: p.y).astype(float).values
+        utm_centroids = valid_utm.geometry.centroid
+        xs = utm_centroids.x.values
+        ys = utm_centroids.y.values
     
     xi = np.linspace(xs.min(), xs.max(), 400)
     yi = np.linspace(ys.min(), ys.max(), 400)
@@ -954,4 +953,3 @@ if __name__ == "__main__":
 
 # python RecursiveSubdivisionTemperatureGrid.py --csv <file-with-InputData.csv> 
 #
-# 
