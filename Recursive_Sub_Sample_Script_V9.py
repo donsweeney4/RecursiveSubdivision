@@ -541,9 +541,8 @@ def plot_rectangles_and_contours(subregion_gdf: gpd.GeoDataFrame, title: str = '
 
     tri = SpatialDelaunay(np.column_stack((xs_utm, ys_utm)))
 
-    # Get WGS84 centroid coordinates for plotting
-    valid_wgs = valid.to_crs("EPSG:4326")
-    wgs_centroids = valid_wgs.geometry.centroid
+    # Transform UTM centroids to WGS84 for plotting (avoids centroid-in-geographic-CRS warning)
+    wgs_centroids = utm_centroids.to_crs("EPSG:4326")
     xs_wgs = wgs_centroids.x.values
     ys_wgs = wgs_centroids.y.values
 
@@ -578,9 +577,8 @@ def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Temperature
 
     tri = SpatialDelaunay(np.column_stack((xs_utm, ys_utm)))
 
-    # Get WGS84 centroid coordinates for plotting
-    valid_wgs = valid.to_crs("EPSG:4326")
-    wgs_centroids = valid_wgs.geometry.centroid
+    # Transform UTM centroids to WGS84 for plotting (avoids centroid-in-geographic-CRS warning)
+    wgs_centroids = utm_centroids.to_crs("EPSG:4326")
     xs_wgs = wgs_centroids.x.values
     ys_wgs = wgs_centroids.y.values
 
