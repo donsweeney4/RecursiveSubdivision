@@ -823,9 +823,7 @@ def build_pipeline(
     join_predicate: str = "intersects",
     output_centroids_csv: str = "output_centroids.csv",
     folium_html: str = "folium_geojson_only.html",
-    with_raster: bool = True,
     raster_png: str = "contour_overlay.png",
-    raster_html: str = "folium_map.html",
     do_static_plots: bool = True,
     no_borders: bool = True,
     folium_output_fundamentals_csv: str = "folium_output_fundamentals.csv",
@@ -868,11 +866,7 @@ def build_pipeline(
     )
     print(f"✅ Wrote Folium map (GeoJSON): {folium_html}")
 
-    image_bounds = None
-    if with_raster:
-        image_bounds, _mask = save_contour_image(subregions, image_filename=raster_png, output_dir=".", no_borders=no_borders)
-        create_folium_map_with_contour(raster_png, image_bounds, output_html=raster_html)
-        print(f"✅ Wrote Folium raster map: {raster_html}")
+    image_bounds, _mask = save_contour_image(subregions, image_filename=raster_png, output_dir=".", no_borders=no_borders)
 
     # Optional static plots
     if do_static_plots:
@@ -885,7 +879,7 @@ def build_pipeline(
         gdf_points=gdf_points,
         subregions=subregions,
         image_bounds=image_bounds,
-        contour_png=(raster_png if with_raster else None)
+        contour_png=raster_png,
     )
 
 
@@ -900,9 +894,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--predicate", default="intersects", choices=["intersects", "within"], help="Spatial join predicate for points→polygons.")
     p.add_argument("--output-centroids", default="intermediate_centroids.csv", help="Output CSV for centroid long/lat and avg temperature.")
     p.add_argument("--folium-html", default="folium_geojson_only.html", help="Output HTML for Folium GeoJSON map.")
-    p.add_argument("--with-raster", action="store_true", help="Also render transparent contour PNG and a raster Folium map.")
     p.add_argument("--raster-png", default="contour_overlay.png", help="Filename for saved transparent contour PNG.")
-    p.add_argument("--raster-html", default="folium_map.html", help="Output HTML for Folium raster map.")
     p.add_argument("--no-static-plots", action="store_true", help="Disable Matplotlib static plots.")
     p.add_argument("--no-borders", dest="no_borders", action="store_true", default=True, help="Hide rectangle borders in static plots (default).")
     p.add_argument("--show-borders", dest="no_borders", action="store_false", help="Show rectangle borders in static plots.")
@@ -926,29 +918,15 @@ def main() -> None:
         join_predicate=args.predicate,
         output_centroids_csv=args.output_centroids,
         folium_html=args.folium_html,
-        with_raster=args.with_raster,
         raster_png=args.raster_png,
-        raster_html=args.raster_html,
         do_static_plots=not args.no_static_plots,
         no_borders=args.no_borders,
         folium_output_fundamentals_csv=args.folium_output_fundamentals,
     )
 
-    # Prefer bounds already computed during the pipeline (if with_raster was enabled)
-    image_bounds = artifacts.image_bounds
-
-    # If with_raster was not enabled, generate the contour image now
-    if image_bounds is None:
-        image_bounds, _ = save_contour_image(
-            artifacts.subregions,
-            image_filename="contour_overlay.png",
-            output_dir=".",
-            no_borders=args.no_borders
-        )
-
     write_kml_ground_overlay(
         image_filename="contour_overlay.png",
-        bounds=image_bounds,
+        bounds=artifacts.image_bounds,
         kml_filename="contour_overlay.kml"
     )
 
