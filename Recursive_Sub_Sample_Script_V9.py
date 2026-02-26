@@ -109,6 +109,7 @@ class BuildArtifacts:
     subregions: gpd.GeoDataFrame
     image_bounds: Optional[List[List[float]]] = None
     contour_png: Optional[str] = None
+    contour_png_unmasked: Optional[str] = None
 
 
 # -------------------------------
@@ -636,7 +637,8 @@ def save_contour_image(
     subregion_gdf: gpd.GeoDataFrame,
     image_filename: str = 'contour_using_controids.png',
     output_dir: str = '.',
-    no_borders: bool = True
+    no_borders: bool = True,
+    apply_mask: bool = True,
 ) -> Tuple[List[List[float]], str]:
     """
     Save a transparent contour PNG clipped to kept subregions.
@@ -706,13 +708,16 @@ def save_contour_image(
     Z = Z_flat.reshape(X.shape)
 
     # --- mask void areas outside kept subregions (in UTM) ---
-    keep_union = unary_union(subregion_gdf_utm.geometry.values) if not subregion_gdf_utm.empty else None
-    if keep_union is not None and not keep_union.is_empty:
-        keep_prep = prep(keep_union)
-        pts = (Point(x, y) for x, y in zip(X.ravel(), Y.ravel()))
-        inside = np.fromiter((keep_prep.covers(p) for p in pts), dtype=bool, count=X.size).reshape(X.shape)
-        Z[~inside] = np.nan
-        print("✅ Applied transparent mask to void regions (outside kept subregions).")
+    if apply_mask:
+        keep_union = unary_union(subregion_gdf_utm.geometry.values) if not subregion_gdf_utm.empty else None
+        if keep_union is not None and not keep_union.is_empty:
+            keep_prep = prep(keep_union)
+            pts = (Point(x, y) for x, y in zip(X.ravel(), Y.ravel()))
+            inside = np.fromiter((keep_prep.covers(p) for p in pts), dtype=bool, count=X.size).reshape(X.shape)
+            Z[~inside] = np.nan
+            print("✅ Applied transparent mask to void regions (outside kept subregions).")
+    else:
+        print("✅ Skipping mask — interpolation shown over full convex hull.")
     
     # --- Transform grid coordinates back to WGS84 for plotting ---
     from pyproj import Transformer
@@ -775,27 +780,50 @@ def write_kml_ground_overlay(
     image_filename: str,
     bounds,
     kml_filename: str = "contour_overlay.kml",
-    name: str = "Contour Overlay"
+    name: str = "Masked (Data Areas Only)",
+    extra_overlays: Optional[List[Tuple[str, str]]] = None,
 ):
     """
     bounds = [[lat_min, lon_min], [lat_max, lon_max]]
+    extra_overlays: list of (image_filename, layer_name) for additional GroundOverlays.
+    When extra_overlays is provided, all overlays are wrapped in a KML Folder so
+    Google Earth Pro shows them as individually toggleable layers.
     """
     (lat_min, lon_min), (lat_max, lon_max) = bounds
 
+    def ground_overlay_xml(img_file: str, layer_name: str, visible: bool = True) -> str:
+        vis = 1 if visible else 0
+        return f"""    <GroundOverlay>
+      <name>{layer_name}</name>
+      <visibility>{vis}</visibility>
+      <Icon>
+        <href>{os.path.basename(img_file)}</href>
+      </Icon>
+      <LatLonBox>
+        <north>{lat_max}</north>
+        <south>{lat_min}</south>
+        <east>{lon_max}</east>
+        <west>{lon_min}</west>
+      </LatLonBox>
+    </GroundOverlay>"""
+
+    all_overlays = [(image_filename, name, True)] + [
+        (f, n, False) for f, n in (extra_overlays or [])
+    ]
+
+    if len(all_overlays) > 1:
+        overlay_blocks = "\n".join(ground_overlay_xml(f, n, v) for f, n, v in all_overlays)
+        body = f"""  <Folder>
+    <name>Contour Overlays</name>
+    <open>1</open>
+{overlay_blocks}
+  </Folder>"""
+    else:
+        body = ground_overlay_xml(image_filename, name, True)
+
     kml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
-  <GroundOverlay>
-    <name>{name}</name>
-    <Icon>
-      <href>{image_filename}</href>
-    </Icon>
-    <LatLonBox>
-      <north>{lat_max}</north>
-      <south>{lat_min}</south>
-      <east>{lon_max}</east>
-      <west>{lon_min}</west>
-    </LatLonBox>
-  </GroundOverlay>
+{body}
 </kml>
 """
 
@@ -804,12 +832,13 @@ def write_kml_ground_overlay(
 
     print(f"✅ Wrote KML overlay: {kml_filename}")
 
-    # Package KML + image into a KMZ (ZIP archive)
+    # Package KML + all images into a KMZ (ZIP archive)
     kmz_filename = kml_filename.replace(".kml", ".kmz")
     with zipfile.ZipFile(kmz_filename, "w", zipfile.ZIP_DEFLATED) as kmz:
         kmz.write(kml_filename, arcname=os.path.basename(kml_filename))
-        if os.path.exists(image_filename):
-            kmz.write(image_filename, arcname=os.path.basename(image_filename))
+        for img_file, _n, _v in all_overlays:
+            if os.path.exists(img_file):
+                kmz.write(img_file, arcname=os.path.basename(img_file))
     print(f"✅ Wrote KMZ overlay: {kmz_filename}")
 
 # -------------------------------
@@ -853,6 +882,7 @@ def build_pipeline(
     output_centroids_csv: str = "output_centroids.csv",
     folium_html: str = "folium_geojson_only.html",
     raster_png: str = "contour_overlay.png",
+    raster_png_unmasked: str = "contour_overlay_two.png",
     do_static_plots: bool = True,
     no_borders: bool = True,
     folium_output_fundamentals_csv: str = "folium_output_fundamentals.csv",
@@ -895,7 +925,8 @@ def build_pipeline(
     )
     print(f"✅ Wrote Folium map (GeoJSON): {folium_html}")
 
-    image_bounds, _mask = save_contour_image(subregions, image_filename=raster_png, output_dir=".", no_borders=no_borders)
+    image_bounds, _mask = save_contour_image(subregions, image_filename=raster_png, output_dir=".", no_borders=no_borders, apply_mask=True)
+    save_contour_image(subregions, image_filename=raster_png_unmasked, output_dir=".", no_borders=no_borders, apply_mask=False)
 
     # Optional static plots
     if do_static_plots:
@@ -910,6 +941,7 @@ def build_pipeline(
         subregions=subregions,
         image_bounds=image_bounds,
         contour_png=raster_png,
+        contour_png_unmasked=raster_png_unmasked,
     )
 
 
@@ -924,7 +956,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--predicate", default="intersects", choices=["intersects", "within"], help="Spatial join predicate for points→polygons.")
     p.add_argument("--output-centroids", default="intermediate_centroids.csv", help="Output CSV for centroid long/lat and avg temperature.")
     p.add_argument("--folium-html", default="folium_geojson_only.html", help="Output HTML for Folium GeoJSON map.")
-    p.add_argument("--raster-png", default="contour_overlay.png", help="Filename for saved transparent contour PNG.")
+    p.add_argument("--raster-png", default="contour_overlay.png", help="Filename for masked contour PNG (data areas only).")
+    p.add_argument("--raster-png-unmasked", default="contour_overlay_two.png", help="Filename for unmasked contour PNG (full convex hull).")
     p.add_argument("--no-static-plots", action="store_true", help="Disable Matplotlib static plots.")
     p.add_argument("--no-borders", dest="no_borders", action="store_true", default=True, help="Hide rectangle borders in static plots (default).")
     p.add_argument("--show-borders", dest="no_borders", action="store_false", help="Show rectangle borders in static plots.")
@@ -949,15 +982,17 @@ def main() -> None:
         output_centroids_csv=args.output_centroids,
         folium_html=args.folium_html,
         raster_png=args.raster_png,
+        raster_png_unmasked=args.raster_png_unmasked,
         do_static_plots=not args.no_static_plots,
         no_borders=args.no_borders,
         folium_output_fundamentals_csv=args.folium_output_fundamentals,
     )
 
     write_kml_ground_overlay(
-        image_filename="contour_overlay.png",
+        image_filename=artifacts.contour_png,
         bounds=artifacts.image_bounds,
-        kml_filename="contour_overlay.kml"
+        kml_filename="contour_overlay.kml",
+        extra_overlays=[(artifacts.contour_png_unmasked, "Full Convex Hull")],
     )
 
 

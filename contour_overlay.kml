@@ -1,15 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
-  <GroundOverlay>
-    <name>Contour Overlay</name>
-    <Icon>
-      <href>contour_overlay.png</href>
-    </Icon>
-    <LatLonBox>
-      <north>37.68403154658262</north>
-      <south>37.68020791458191</south>
-      <east>-121.75720464437244</east>
-      <west>-121.76208438070609</west>
-    </LatLonBox>
-  </GroundOverlay>
+  <Folder>
+    <name>Contour Overlays</name>
+    <open>1</open>
+    <GroundOverlay>
+      <name>Masked (Data Areas Only)</name>
+      <visibility>1</visibility>
+      <Icon>
+        <href>contour_overlay.png</href>
+      </Icon>
+      <LatLonBox>
+        <north>37.68403154658262</north>
+        <south>37.68020791458191</south>
+        <east>-121.75720464437244</east>
+        <west>-121.76208438070609</west>
+      </LatLonBox>
+    </GroundOverlay>
+    <GroundOverlay>
+      <name>Full Convex Hull</name>
+      <visibility>0</visibility>
+      <Icon>
+        <href>contour_overlay_two.png</href>
+      </Icon>
+      <LatLonBox>
+        <north>37.68403154658262</north>
+        <south>37.68020791458191</south>
+        <east>-121.75720464437244</east>
+        <west>-121.76208438070609</west>
+      </LatLonBox>
+    </GroundOverlay>
+  </Folder>
 </kml>
