@@ -600,6 +600,35 @@ def plot_contour_only(subregion_gdf: gpd.GeoDataFrame, title: str = 'Static 3. T
     plt.show(block=False)
 
 
+# Static Plot 4 - Delaunay triangulation diagnostic (centroids + triangle edges)
+
+def plot_delaunay_diagnostic(subregion_gdf: gpd.GeoDataFrame, title: str = 'Static 4. Delaunay Triangulation Diagnostic') -> None:
+    valid = subregion_gdf.dropna(subset=['avg_temperature'])
+
+    utm_crs = get_utm_crs(valid)
+    valid_utm = valid.to_crs(utm_crs)
+    utm_centroids = valid_utm.geometry.centroid
+    xs_utm = utm_centroids.x.values
+    ys_utm = utm_centroids.y.values
+
+    tri = SpatialDelaunay(np.column_stack((xs_utm, ys_utm)))
+
+    wgs_centroids = utm_centroids.to_crs("EPSG:4326")
+    xs_wgs = wgs_centroids.x.values
+    ys_wgs = wgs_centroids.y.values
+
+    triang = mtri.Triangulation(xs_wgs, ys_wgs, triangles=tri.simplices)
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.triplot(triang, color='steelblue', linewidth=0.8)
+    ax.scatter(xs_wgs, ys_wgs, color='red', s=20, zorder=5)
+    ax.set_title(title)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_aspect("equal", adjustable="box")
+    plt.show(block=False)
+
+
 # -------------------------------
 # Raster export + mask (core)
 # -------------------------------
@@ -873,6 +902,7 @@ def build_pipeline(
         plot_temperature_colored_subregions(subregions, no_borders=no_borders)
         plot_rectangles_and_contours(subregions, no_borders=no_borders)
         plot_contour_only(subregions)
+        plot_delaunay_diagnostic(subregions)
         plt.show()  # block until all plot windows are closed
 
     return BuildArtifacts(
